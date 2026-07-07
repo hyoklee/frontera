@@ -1,0 +1,35 @@
+# clio-core (chimaera) runtime config for the case-6 IOWarp comparison.
+# Composes the DRAM block device (required allocator) + CTE core with a single
+# RAM storage tier. The CTE POSIX adapter (LD_PRELOAD=libclio_cte_posix.so)
+# connects to this runtime via CLIO_SERVER_CONF and buffers intercepted file
+# I/O into the RAM tier. Mirrors the ares chimaera_case6.yaml (RAM tier).
+memory:
+  main_segment_size: "8GB"
+  client_data_segment_size: "2GB"
+networking:
+  port: 9413
+runtime:
+  num_threads: 4
+  queue_depth: 1024
+  first_busy_wait: 10000
+  max_sleep: 50000
+compose:
+  - mod_name: clio_bdev
+    pool_name: "ram::chi_default_bdev"
+    pool_query: local
+    pool_id: "301.0"
+    bdev_type: ram
+    capacity: "0g"
+  - mod_name: clio_cte_core
+    pool_name: cte_main
+    pool_query: local
+    pool_id: "512.0"
+    storage:
+      - path: "ram::cte_ram_tier1"
+        bdev_type: "ram"
+        capacity_limit: "0g"
+        score: 1.0
+    dpe:
+      dpe_type: "max_bw"
+    targets:
+      neighborhood: 1

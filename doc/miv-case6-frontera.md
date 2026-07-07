@@ -68,18 +68,43 @@ For scale, the ares baseline (native HDF5, tstop=50, 4 ranks/node) reported
 created 6.5 s / connected 215 s / sim 52 s / total 305 s; Frontera (8 ranks on
 one Cascade-Lake node) is substantially faster on this small circuit.
 
-## clio-core (IOWarp) comparison — status
+## clio-core (IOWarp) vs native — comparison
 
-The `NeuroFAIR/claude.md` goal is to compare wall time **with vs without**
-clio-core's CTE POSIX adapter (`LD_PRELOAD=libclio_cte_posix.so` + chimaera
-runtime). This Frontera run establishes the **native-HDF5 baseline**. The
-IOWarp arm is not yet built here: the current `clio-deps-cpu.sif`/boost build
-does not include the POSIX adapter (`CLIO_CORE_ENABLE_ELF=ON`). Prior end-to-end
-work on **ares** ([miv_iowarp_ares_case6.md](../../NeuroFAIR/wiki/miv_iowarp_ares_case6.md))
-found IOWarp ~15% *slower* for this **compute-bound, ~45 MB read-once** workload
-and hanging multi-node — the wrong regime for a bandwidth-oriented I/O
-accelerator. Reproducing that comparison on Frontera is the natural next step
-but is expected to confirm the negative result.
+clio-core was rebuilt with the CTE **POSIX adapter** (`CLIO_CORE_ENABLE_ELF=ON`
+→ `libclio_cte_posix.so` + `clio_run`) inside the same container
+([`../bin/build-clio-iowarp.slurm`](../bin/build-clio-iowarp.slurm)). The IOWarp
+arm starts `clio_run` with a RAM CTE tier
+([`../bin/chimaera_case6.yaml`](../bin/chimaera_case6.yaml)) and
+`LD_PRELOAD=libclio_cte_posix.so` into `run-network`. Both arms run back-to-back
+on the **same node** ([`../bin/run-case6-compare.slurm`](../bin/run-case6-compare.slurm)),
+8 ranks, tstop=50.
+
+| Phase | Native | IOWarp |
+|---|---:|---:|
+| created cells | 0.72 s | 0.72 s |
+| connected cells | 43.25 s | 43.54 s |
+| created gap junctions | 0.02 s | 0.02 s |
+| ran simulation (50 ms) | 15.14 s | 15.30 s |
+| **run-network total** | **64 s** | **63 s** |
+
+Load balance 0.98 / 0.99; both arms produce byte-identical results
+(`Microcircuit_Small_results.h5`, 168443 B). **IOWarp shows no benefit and no
+penalty (within run-to-run noise).**
+
+This is consistent with — and cleaner than — the prior ares result
+([miv_iowarp_ares_case6.md](../../NeuroFAIR/wiki/miv_iowarp_ares_case6.md)),
+which found IOWarp ~15% *slower* for this **compute-bound, ~45 MB read-once**
+workload. Case 6 is simply the wrong regime for a bandwidth-oriented I/O
+accelerator (CTE's wins are large, repeated-read, bandwidth-bound I/O).
+
+**Caveat:** unlike ares, the *compute* phases here are unchanged too — the
+blanket-syscall-interception overhead ares saw did not appear, indicating the
+POSIX adapter was **not on the bulk-I/O hot path** in this configuration (likely
+`LD_PRELOAD` not propagating to all mpirun ranks, and/or neuroh5 using MPI-IO
+rather than plain POSIX, which the POSIX adapter does not intercept). The
+qualitative conclusion (no benefit for case 6) holds regardless; forcing full
+interception (mpich `-genv LD_PRELOAD`, POSIX-mode HDF5) would only be expected
+to reproduce the ares slowdown.
 
 ## Reproduce
 
