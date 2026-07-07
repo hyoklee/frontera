@@ -64,6 +64,12 @@ Circuit: Microcircuit_Small — PYR/PVBC/OLM/STIM, ~177 cells, + gap junctions.
 
 Load balance 0.98. Output: `results/runs/Microcircuit_Small_results.h5`.
 
+**Full-length run (tstop=2000, `TSTOP=2000 sbatch run-case6.slurm`):** completed
+in 13m22s — generate-gapjunctions 22 s, run-network 764 s (created cells 0.72 s,
+connected cells 51.23 s, ran simulation 657.40 s), load balance 0.99, output
+2.87 MB. The simulation phase scales ~linearly with tstop (15.4 s → 657 s for
+40× longer), confirming the full case runs cleanly.
+
 For scale, the ares baseline (native HDF5, tstop=50, 4 ranks/node) reported
 created 6.5 s / connected 215 s / sim 52 s / total 305 s; Frontera (8 ranks on
 one Cascade-Lake node) is substantially faster on this small circuit.
