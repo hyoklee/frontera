@@ -1,0 +1,110 @@
+Bootstrap: localimage
+From: /work2/11623/hyoklee/frontera/clio-deps-cpu.sif
+
+# MiV-Simulator case-6 stack on top of the clio-deps-cpu image (Ubuntu 24.04,
+# glibc 2.39) so it runs on Frontera's el7 host. Adds MPICH + parallel HDF5
+# (built from source into /opt/hdf5 for a clean, unambiguously-parallel prefix
+# -- the Ubuntu multiarch apt HDF5 makes CMake/h5py pick the serial variant)
+# + a venv with mpi4py/h5py(parallel)/NEURON, then builds the LOCAL neuroh5 fork
+# (carries the alltoallv int-overflow fix) and MiV-Simulator@vista-arm-fix
+# (carries the case-6 gap-junction mechanism fix).
+#
+# The two local repos are copied in from the host at build time.
+
+%files
+    /work2/11623/hyoklee/neuroh5 /opt/neuroh5
+    /work2/11623/hyoklee/MiV-Simulator /opt/MiV-Simulator
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # Toolchain + MPICH + parallel HDF5 (built against MPICH) + python + libs
+    # NEURON/matplotlib runtime need libgl1/xext/sm; readline for hoc.
+    # NO apt HDF5 (multiarch serial/parallel split confuses CMake) -- built below.
+    apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config git ca-certificates wget \
+        mpich libmpich-dev zlib1g-dev \
+        python3-dev python3-venv python3-pip \
+        libgl1 libsm6 libxext6 libreadline-dev
+    # With only mpich installed, the unsuffixed wrappers resolve to MPICH.
+    mpicc --version
+
+    # ---- Parallel HDF5 from source -> clean prefix /opt/hdf5 (guaranteed MPI) --
+    export HDF5_DIR=/opt/hdf5
+    HV=1.14.6
+    cd /tmp
+    ( wget -q "https://github.com/HDFGroup/hdf5/releases/download/hdf5_${HV}/hdf5-${HV}.tar.gz" \
+      || wget -q "https://support.hdfgroup.org/releases/hdf5/v1_14/v1_14_6/downloads/hdf5-${HV}.tar.gz" )
+    tar xzf hdf5-${HV}.tar.gz
+    cd hdf5-${HV}
+    CC=mpicc ./configure --prefix=$HDF5_DIR --enable-parallel --enable-shared \
+        --enable-build-mode=production
+    make -j8 && make install
+    cd /tmp && rm -rf hdf5-${HV} hdf5-${HV}.tar.gz
+    export PATH=$HDF5_DIR/bin:$PATH
+    export LD_LIBRARY_PATH=$HDF5_DIR/lib:$LD_LIBRARY_PATH
+
+    # Dedicated venv for the MiV stack.
+    python3 -m venv /opt/miv-venv
+    . /opt/miv-venv/bin/activate
+    pip install --no-cache-dir --upgrade pip wheel setuptools
+    pip install --no-cache-dir "numpy<2" "Cython"
+
+    # mpi4py + h5py compiled from source against container MPICH / parallel HDF5.
+    MPICC=mpicc pip install --no-cache-dir --no-binary=mpi4py "mpi4py>=4.0.0"
+    HDF5_MPI=ON CC=mpicc HDF5_DIR=$HDF5_DIR \
+        pip install --no-cache-dir --no-binary=h5py --no-deps "h5py>=3.16.0"
+
+    # NEURON (pip wheel; supports MPI dynamic-load + nrnivmodl for .mod files).
+    pip install --no-cache-dir "neuron>=9.0a0"
+
+    # ---- neuroh5 (local fork; parallel HDF5 + MPI C extension + C++ tools) ----
+    # HDF5_ROOT -> the clean parallel prefix so CMake finds the MPI-IO API.
+    cd /opt/neuroh5
+    CC=mpicc CXX=mpicxx HDF5_ROOT=$HDF5_DIR HDF5_IS_PARALLEL=TRUE \
+        pip install --no-cache-dir --no-deps -v .
+    # C++ driver tools (neurotrees_import etc.) used by the construction pipeline.
+    CC=mpicc CXX=mpicxx cmake -DHDF5_ROOT=$HDF5_DIR -DHDF5_IS_PARALLEL=TRUE \
+        -DBUILD_TESTS=OFF -DBUILD_PYTHON_BINDINGS=OFF . && make -j8 || true
+
+    # ---- MiV-Simulator (local @vista-arm-fix) + its pure-python deps ---------
+    # --no-deps for the ones we built from source; install the rest explicitly.
+    pip install --no-cache-dir --no-deps /opt/MiV-Simulator
+    pip install --no-cache-dir \
+        "numpy<2" \
+        "pyyaml>=6.0.2" "pydantic>=2.8.2" "matplotlib>=3.9.2" \
+        "quantities>=0.16.0" "machinable>=4.10.3" "networkx>=3.2.1" \
+        "scipy>=1.13,<1.14" "click" \
+        "treverhines-rbf>=2024.3.21" \
+        "spike_encoder @ git+https://github.com/iraikov/neural_spike_encoding.git"
+
+    # MiV-Simulator uses APIs removed in NumPy 2.0 (np.row_stack, np.float_, ...).
+    # Pin NumPy < 2 as the LAST step so nothing upgrades it back.
+    pip install --no-cache-dir "numpy<2"
+
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+    # %files copied the host repos with 0700 perms owned by build-root; the
+    # unprivileged runtime user can't traverse/exec them. Make /opt world-rX.
+    chmod -R a+rX /opt
+    echo "MiV stack build DONE"
+
+%environment
+    export PATH=/opt/miv-venv/bin:/opt/hdf5/bin:/opt/neuroh5/bin:$PATH
+    export LD_LIBRARY_PATH=/opt/hdf5/lib:$LD_LIBRARY_PATH
+    # neuroh5 alltoallv chunk size (int-overflow-safe P2P path); small circuit.
+    export NEUROH5_CHUNK_SIZE=1073741824
+    # MiV import-time MPI consistency guard is unreliable in-container; skip it.
+    export MIV_SKIP_MPI_CHECK=1
+
+%test
+    . /opt/miv-venv/bin/activate
+    mpicc --version | head -1
+    python -c "import numpy; print('numpy', numpy.__version__)"
+    python -c "import mpi4py; print('mpi4py', mpi4py.__version__)"
+    python -c "import h5py; print('h5py', h5py.__version__, 'mpi', h5py.get_config().mpi)"
+    python -c "import neuroh5; from neuroh5.io import read_population_names; print('neuroh5 OK')"
+    python -c "import miv_simulator; print('miv_simulator OK')"
+    python -c "from neuron import h; print('neuron OK')"
+    which neurotrees_import || echo "neurotrees_import MISSING"
