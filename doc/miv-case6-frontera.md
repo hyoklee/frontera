@@ -112,6 +112,49 @@ qualitative conclusion (no benefit for case 6) holds regardless; forcing full
 interception (mpich `-genv LD_PRELOAD`, POSIX-mode HDF5) would only be expected
 to reproduce the ares slowdown.
 
+## clio-core HDF5 VOL adapter vs native
+
+The ares analysis noted the POSIX adapter misses neuroh5's bulk transfers and
+that an **HDF5 VOL/VFD** adapter is the right interception point. clio-core's
+`iowarp` VOL connector (`CLIO_CTE_ENABLE_HDF5_VOL=ON` → `libiowarp_hdf5_vol.so`)
+is a **passthrough** connector that intercepts `H5Dwrite`/`H5Dread` →
+CTE `PutBlob`/`GetBlob` (falls back to the native VOL for collective MPI-IO) and
+loads via `HDF5_VOL_CONNECTOR=iowarp` + `HDF5_PLUGIN_PATH`
+([`../bin/build-clio-iowarp.slurm`](../bin/build-clio-iowarp.slurm),
+[`../bin/run-case6-vol.slurm`](../bin/run-case6-vol.slurm)).
+
+**Outcome: the VOL connector builds and loads correctly and attaches to the CTE
+runtime, but the end-to-end case-6 comparison could not be completed** — it
+aborts during neuroh5's population enumeration:
+```
+Assertion 'H5Literate(grp, ...) >= 0' failed in neuroh5/src/cell/cell_populations.cc:83
+```
+
+Diagnosis (each step verified):
+1. **HDF5 duality (fixed).** The base image ships a *serial* HDF5 2.1.1 at
+   `/usr/local` whose CMake CONFIG package the connector picked up first, so it
+   linked `libhdf5.so.320` while run-network uses `/opt/hdf5` `libhdf5.so.310`
+   → two HDF5s in one process → segfault in `H5CX_get_vol_connector_prop`. Fixed
+   with `-DCMAKE_IGNORE_PATH=/usr/local/cmake` (+ `HDF5_ROOT=/opt/hdf5`) and
+   `mpicxx` (parallel HDF5 headers need `mpi.h`); `ldd` then confirms the
+   connector links `/opt/hdf5/lib/libhdf5.so.310`.
+2. **Serial iteration works.** A single-process `h5ls` through the connector
+   lists the populations correctly (`OLM/PVBC/PYR/STIM`, rc=0) — `H5Literate` is
+   fine on an independent (non-MPI) fapl.
+3. **Parallel iteration fails.** neuroh5 always opens files with the **MPI-IO
+   (collective) fapl**, and `H5Literate` fails through the connector in that mode
+   — at both 8 ranks and 1 rank. So it is a clio-core VOL-connector limitation
+   for **parallel/collective HDF5 metadata iteration**, not a rank-count or
+   setup issue.
+
+Net: the VOL connector is the correct *interception point* (dataset-level, the
+actual neuroh5 hot path) and works serially, but is not yet functional for
+neuroh5's parallel MPI-IO access pattern on this clio-core build. Completing the
+comparison would require fixing the connector's collective-metadata iteration
+(a clio-core change) — and per the compute-bound analysis above, even a working
+VOL is not expected to speed up this small, read-once workload; its value would
+be on large, bandwidth-bound, repeated-read circuits.
+
 ## Reproduce
 
 ```bash
@@ -119,4 +162,7 @@ cd /work2/11623/hyoklee/frontera.hyoklee/bin
 sbatch build-miv-sif.slurm        # build miv-stack.sif (once)
 sbatch construct-case6-data.slurm # generate dataset onto /scratch2
 sbatch run-case6.slurm            # run case 6 (TSTOP=50 default; TSTOP=2000 for full)
+sbatch build-clio-iowarp.slurm    # clio-core with POSIX + HDF5 VOL adapters
+sbatch run-case6-compare.slurm    # native vs IOWarp POSIX adapter
+sbatch run-case6-vol.slurm        # native vs HDF5 VOL connector
 ```
