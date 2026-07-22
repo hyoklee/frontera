@@ -1,4 +1,4 @@
-Create a new slurm job that runs MiV simulation case 6.
+Create a new slurm job that runs MiV simulation case 6 using HDF5 VOL adapter.
 Save slurm job scripts and other shell scripts into `/work2/11623/hyoklee/frontera.hyoklee/bin/` directory.
 All necessary repos such as clio-core, neuroh5, NeuroFAIR, MiV-Simulator, and MiV-Simulator-Cases for simulation are available under `/work2/11623/hyoklee/`
 Always use the latest `dev` branch for `clio-core`.

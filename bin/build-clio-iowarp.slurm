@@ -56,9 +56,9 @@ cmake -S '"$SRC"' -B '"$BUILD_DIR"' -G "Unix Makefiles" \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build '"$BUILD_DIR"' -j"$(nproc)"
 echo "===== built artifacts ====="
-find '"$BUILD_DIR"' -name "libclio_cte_posix.so" -o -name "libiowarp_hdf5_vol.so" -o -name "clio_run" | head
+find '"$BUILD_DIR"' -name "libclio_cte_posix.so" -o -name "libclio_hdf5_vol.so" -o -name "clio_run" | head
 echo "===== VOL connector HDF5 link (must be /opt/hdf5, NOT /usr/local) ====="
-VS=$(find '"$BUILD_DIR"' -name libiowarp_hdf5_vol.so | head -1)
+VS=$(find '"$BUILD_DIR"' -name libclio_hdf5_vol.so | head -1)
 ldd "$VS" | grep -iE "hdf5|libhdf5" || echo "(no direct hdf5 dep listed)"
 chmod -R a+rX '"$BUILD_DIR"' || true
 echo "CLIO_IOWARP_BUILD_OK"

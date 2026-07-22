@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J miv-case6-vol
-#SBATCH -p normal
+#SBATCH -p development
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 02:00:00
@@ -36,7 +36,7 @@ cp "$CONSTRUCT"/MiV_Cells_Microcircuit_Small_20220410.h5 "$RUNDIR/datasets/Micro
 cp "$CONSTRUCT"/MiV_Connections_Microcircuit_Small_20220410.h5 "$RUNDIR/datasets/Microcircuit_Small/"
 cp "$CONF" "$RUNDIR/chimaera_case6.yaml"
 
-VOL_SO=$(find "$CLIO_IOWARP" -name libiowarp_hdf5_vol.so 2>/dev/null | head -1)
+VOL_SO=$(find "$CLIO_IOWARP" -name libclio_hdf5_vol.so 2>/dev/null | head -1)
 CLIO_RUN=$(find "$CLIO_IOWARP" -name clio_run -type f 2>/dev/null | head -1)
 VOL_DIR=$(dirname "$VOL_SO")
 echo "VOL_SO=$VOL_SO"; echo "CLIO_RUN=$CLIO_RUN"
@@ -49,6 +49,10 @@ set -e
 export PATH=/opt/hdf5/bin:/opt/neuroh5/bin:$PATH
 export LD_LIBRARY_PATH=/opt/hdf5/lib:$LD_LIBRARY_PATH
 export MIV_SKIP_MPI_CHECK=1 NEUROH5_CHUNK_SIZE=1073741824
+# VOL-compat h5py shim (sitecustomize.py auto-imported at python startup); a
+# no-op unless HDF5_VOL_CONNECTOR is set, so the native arm is unaffected. Fixes
+# h5py File(...,"a") open-or-create of a new file through a non-native VOL.
+export PYTHONPATH=/work2/11623/hyoklee/frontera.hyoklee/bin:${PYTHONPATH:-}
 cd '"$RUNDIR"'
 NR='"$NR"'; TS='"$TSTOP"'
 VOL_DIR='"$VOL_DIR"'; CLIO_RUN='"$CLIO_RUN"'
@@ -65,8 +69,8 @@ mpirun -np $NR generate-gapjunctions --config=./config/Microcircuit_Small.yaml \
     --coords-path=./datasets/Microcircuit_Small/MiV_Cells_Microcircuit_Small_20220410.h5 \
     --coords-namespace="Generated Coordinates" --io-size=4 -v
 
-runnet () {  # $1=results subdir
-    mpirun -n $NR run-network --verbose --arena-id A --stimulus-id Diag \
+runnet () {  # $1=results subdir; $RUNPFX optional (e.g. "timeout 900")
+    $RUNPFX mpirun -n $NR run-network --verbose --arena-id A --stimulus-id Diag \
         --config-file=Microcircuit_Small.yaml --template-paths templates \
         --dt 0.01 --tstop $TS --dataset-prefix ./datasets --config-prefix config \
         --results-path results/$1
@@ -88,15 +92,30 @@ for i in $(seq 1 40); do
     kill -0 $RTPID 2>/dev/null || { echo "RUNTIME DIED"; tail -30 runtime.log; break; }
     sleep 1
 done
-echo "===== VOL run-network (HDF5_VOL_CONNECTOR=iowarp) @ $(date +%T) ====="
+# Optional workaround: h5py "a" (open-or-create) of a NEW file fails through the
+# clio VOL (open-of-nonexistent RDWR). Pre-create the results file NATIVELY (this
+# python runs without the VOL env) so mkout opens an existing file RDWR instead.
+if [ -n "$PRECREATE_RESULTS" ]; then
+    echo "pre-creating results/vol results file natively"
+    python3 -c "import h5py; h5py.File(\"results/vol/Microcircuit_Small_results.h5\",\"w\").close()"
+fi
+echo "===== VOL run-network (HDF5_VOL_CONNECTOR=clio) @ $(date +%T) ====="
 t0=$SECONDS
-HDF5_PLUGIN_PATH=$VOL_DIR HDF5_VOL_CONNECTOR=iowarp \
-    runnet vol || echo "VOL run-network FAILED rc=$?"
+RUNPFX="timeout 900" HDF5_PLUGIN_PATH=$VOL_DIR HDF5_VOL_CONNECTOR=clio \
+    runnet vol || echo "VOL run-network FAILED/timeout rc=$?"
 echo "VOL_SECONDS=$((SECONDS-t0))"
 "$CLIO_RUN" runtime stop 2>/dev/null || kill $RTPID 2>/dev/null || true
 eval "$CLEAN"
 
 echo "===== results ====="; ls -la results/native results/vol 2>/dev/null
+echo "===== h5diff native vs VOL results (0 = bit-identical) ====="
+NFILE=$(ls results/native/*.h5 2>/dev/null | head -1)
+VFILE=$(ls results/vol/*.h5 2>/dev/null | head -1)
+if [ -n "$NFILE" ] && [ -n "$VFILE" ]; then
+    if h5diff "$NFILE" "$VFILE"; then echo "H5DIFF_IDENTICAL"; else echo "H5DIFF_DIFFERENT (rc=$?)"; fi
+else
+    echo "H5DIFF_SKIPPED (missing results file)"
+fi
 echo "===== runtime.log tail ====="; tail -15 runtime.log 2>/dev/null
 echo "VOL_CMP_DONE"
 '
